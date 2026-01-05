@@ -109,13 +109,16 @@ export const extractAirportData = async (text: string): Promise<AirportRecord[]>
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Extract detailed AAI traffic statistics.
-      Focus on extracting:
-      - Passengers (DOM, INTL, Total, YoY Growth %)
-      - Cargo (DOM, INTL, Total, YoY Growth %)
-      - ATMs (Aircraft Movements): Extract Total ATMs, INTL ATMs, DOM ATMs. 
-      - Specifically look for splits: DOM Pax ATM, DOM Cargo ATM, INTL Pax ATM, INTL Cargo ATM.
-      - Comparative stats from same month last year.
+      contents: `You are an expert aviation data extractor. 
+      Your task is to extract EVERY SINGLE ROW of traffic statistics from the provided AAI report. 
+      Do not skip any airports. Ensure all columns (Domestic, International, Total, YoY Growth) are captured for Passengers, Cargo, and Aircraft Movements (ATMs).
+      
+      Look specifically for:
+      - Passenger Traffic (DOM, INTL, TOTAL)
+      - Cargo Traffic in MT (DOM, INTL, TOTAL)
+      - Aircraft Movements (ATMs) with PAX/Cargo splits.
+      
+      If the text contains multiple tables, merge them into a single continuous list of records.
       
       Text to parse:
       ${text}`,

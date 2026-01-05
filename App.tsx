@@ -1,10 +1,10 @@
 
-import React, { useState, useMemo } from 'react';
-import { Upload, FileText, FileSpreadsheet, Download, RefreshCw, BarChart3, ChevronRight, AlertCircle, Plane, Package, Users, Calendar, Plus, X, Layers, TrendingUp, Loader2, Table as TableIcon, History, ArrowUpDown, ChevronUp, ChevronDown, Activity, ArrowUpRight, ArrowDownRight, LayoutDashboard, Database, PieChart, CheckCircle2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Upload, FileText, FileSpreadsheet, Download, RefreshCw, BarChart3, ChevronRight, AlertCircle, Plane, Package, Users, Calendar, Plus, X, Layers, TrendingUp, Loader2, Table as TableIcon, History, ArrowUpDown, ChevronUp, ChevronDown, Activity, ArrowUpRight, ArrowDownRight, LayoutDashboard, Database, PieChart, CheckCircle2, Trash2, Library, FileCheck } from 'lucide-react';
 import { extractAirportData } from './services/geminiService';
 import { exportToExcel, readSheetData } from './services/excelService';
 import { extractTextFromPdf } from './services/pdfService';
-import { AirportRecord } from './types';
+import { AirportRecord, ProcessedFileMeta } from './types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, AreaChart, Area } from 'recharts';
 
 type SortKey = 'year' | 'month' | 'airportName' | 'totalPax' | 'paxYoY' | 'domPax' | 'intlPax' | 'totalCargo' | 'cargoYoY' | 'domCargo' | 'intlCargo' | 'totalAtm' | 'atmYoY' | 'domAtm' | 'intlAtm' | 'domPaxAtm' | 'domCargoAtm' | 'intlPaxAtm' | 'intlCargoAtm';
@@ -15,15 +15,36 @@ interface SortConfig {
   direction: SortDirection;
 }
 
+const STORAGE_KEY_RECORDS = 'aai_extracted_records';
+const STORAGE_KEY_FILES = 'aai_processed_files_meta';
+
 const App: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string>("");
   const [allRecords, setAllRecords] = useState<AirportRecord[]>([]);
+  const [processedFiles, setProcessedFiles] = useState<ProcessedFileMeta[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'table' | 'charts'>('table');
+  const [activeTab, setActiveTab] = useState<'table' | 'charts' | 'library'>('table');
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'year', direction: 'desc' });
+
+  // Load from Storage on Mount
+  useEffect(() => {
+    const savedRecords = localStorage.getItem(STORAGE_KEY_RECORDS);
+    const savedFiles = localStorage.getItem(STORAGE_KEY_FILES);
+    if (savedRecords) setAllRecords(JSON.parse(savedRecords));
+    if (savedFiles) setProcessedFiles(JSON.parse(savedFiles));
+  }, []);
+
+  // Sync to Storage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_RECORDS, JSON.stringify(allRecords));
+  }, [allRecords]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(processedFiles));
+  }, [processedFiles]);
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const getMonthIndex = (m: string) => {
@@ -94,9 +115,9 @@ const App: React.FC = () => {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-        setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
-        setError(null);
-        setSuccessMsg(null);
+      setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
+      setError(null);
+      setSuccessMsg(null);
     }
   };
 
@@ -107,51 +128,88 @@ const App: React.FC = () => {
     setSuccessMsg(null);
     
     const newRecordsBatch: AirportRecord[] = [];
-    let skipCount = 0;
+    const newFileMetas: ProcessedFileMeta[] = [];
+    let totalSkipped = 0;
     
-    // Create a robust lookup of existing keys normalized by month index
     const existingKeys = new Set(allRecords.map(r => `${r.airportName.trim()}-${getMonthIndex(r.month)}-${r.year}`.toLowerCase()));
 
     try {
       for (let i = 0; i < files.length; i++) {
-        setProcessingStatus(`Consolidating ${i + 1}/${files.length}: ${files[i].name}`);
-        const ext = files[i].name.split('.').pop()?.toLowerCase();
+        const currentFile = files[i];
+        setProcessingStatus(`Processing ${i + 1}/${files.length}: ${currentFile.name}`);
+        
+        // Skip if file with same name already exists in library
+        if (processedFiles.find(f => f.name === currentFile.name)) {
+          totalSkipped += 1;
+          continue;
+        }
+
+        const ext = currentFile.name.split('.').pop()?.toLowerCase();
         let text = "";
-        if (ext === 'pdf') text = await extractTextFromPdf(files[i]);
-        else if (['xlsx', 'xls', 'csv'].includes(ext || '')) text = await readSheetData(files[i]);
+        if (ext === 'pdf') text = await extractTextFromPdf(currentFile);
+        else if (['xlsx', 'xls', 'csv'].includes(ext || '')) text = await readSheetData(currentFile);
         
         const extractedData = await extractAirportData(text);
-        
+        let addedCount = 0;
+
         extractedData.forEach(record => {
-          // Normalize the unique key using month index for consistency
           const uniqueKey = `${record.airportName.trim()}-${getMonthIndex(record.month)}-${record.year}`.toLowerCase();
           
           if (!existingKeys.has(uniqueKey)) {
-            newRecordsBatch.push(record);
-            existingKeys.add(uniqueKey); // Prevent duplicates within the same upload batch
-          } else {
-            skipCount++;
+            newRecordsBatch.push({
+              ...record,
+              sourceFile: currentFile.name // Tag each record with its origin
+            });
+            existingKeys.add(uniqueKey);
+            addedCount++;
           }
         });
+
+        if (addedCount > 0) {
+          newFileMetas.push({
+            id: crypto.randomUUID(),
+            name: currentFile.name,
+            processedAt: new Date().toISOString(),
+            recordCount: addedCount
+          });
+        }
       }
 
-      if (newRecordsBatch.length === 0 && skipCount > 0) {
-        setError(`Processing complete: All ${skipCount} data points were already present in the database. No new records added.`);
-      } else if (newRecordsBatch.length > 0) {
+      if (newRecordsBatch.length === 0 && files.length > 0) {
+        setError(`All records in these files are already in the database.`);
+      } else {
         setAllRecords(prev => [...prev, ...newRecordsBatch]);
-        setSuccessMsg(`Successfully imported ${newRecordsBatch.length} new records.${skipCount > 0 ? ` (Skipped ${skipCount} duplicates)` : ''}`);
+        setProcessedFiles(prev => [...prev, ...newFileMetas]);
+        setSuccessMsg(`Successfully extracted ${newRecordsBatch.length} records from ${newFileMetas.length} new files.`);
+        setActiveTab('table');
       }
       
       setFiles([]);
     } catch (err: any) {
-      setError(err.message || "Failed to structure files");
+      setError(err.message || "Failed to process files");
     } finally {
       setIsProcessing(false);
       setProcessingStatus("");
     }
   };
 
-  const clearAll = () => { if (window.confirm("Purge all master records?")) { setAllRecords([]); setSuccessMsg(null); setError(null); } };
+  const deleteFileFromLibrary = (fileName: string) => {
+    if (window.confirm(`Delete "${fileName}"? This will also remove all ${allRecords.filter(r => r.sourceFile === fileName).length} records associated with it.`)) {
+      setAllRecords(prev => prev.filter(r => r.sourceFile !== fileName));
+      setProcessedFiles(prev => prev.filter(f => f.name !== fileName));
+      setSuccessMsg(`Removed "${fileName}" and its associated data.`);
+    }
+  };
+
+  const clearAllData = () => {
+    if (window.confirm("Permanently wipe the entire local database?")) {
+      setAllRecords([]);
+      setProcessedFiles([]);
+      localStorage.removeItem(STORAGE_KEY_RECORDS);
+      localStorage.removeItem(STORAGE_KEY_FILES);
+      setSuccessMsg("Database cleared.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans selection:bg-indigo-100">
@@ -163,50 +221,48 @@ const App: React.FC = () => {
             </div>
             <div>
               <h1 className="text-lg font-bold text-slate-900 leading-tight">AAI Aviation Intelligence</h1>
-              <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Consolidated Master Flow</p>
+              <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Local Persistent Data Hub</p>
             </div>
           </div>
           <div className="flex items-center space-x-3">
+            <button onClick={() => document.getElementById('fi')?.click()} className="bg-white px-4 py-2 border border-slate-200 rounded-lg text-sm font-bold flex items-center hover:bg-slate-50 transition-colors">
+              <Plus className="mr-2 h-4 w-4 text-indigo-600" /> Add New Report
+              <input id="fi" type="file" multiple hidden onChange={handleFileChange} />
+            </button>
             {allRecords.length > 0 && (
-              <>
-                <button onClick={() => document.getElementById('fi')?.click()} className="bg-white px-4 py-2 border border-slate-200 rounded-lg text-sm font-bold flex items-center hover:bg-slate-50 transition-colors">
-                  <Plus className="mr-2 h-4 w-4 text-indigo-600" /> Add Reports
-                  <input id="fi" type="file" multiple hidden onChange={handleFileChange} />
-                </button>
-                <button onClick={() => exportToExcel(allRecords, 'AAI_Master_Database')} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all">
-                  <Download className="mr-2 h-4 w-4" /> Export Master
-                </button>
-              </>
+              <button onClick={() => exportToExcel(allRecords, 'AAI_Master_Export')} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all">
+                <Download className="mr-2 h-4 w-4" /> Export All
+              </button>
             )}
           </div>
         </div>
       </header>
 
       <main className="flex-1 max-w-[2000px] mx-auto w-full p-6 space-y-6">
-        {/* Unified Upload Area */}
-        {(allRecords.length === 0 || files.length > 0) && (
+        {/* Upload Overlay/Area */}
+        {(files.length > 0 || allRecords.length === 0) && (
           <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden max-w-2xl mx-auto mt-6 animate-in slide-in-from-top-4 duration-500">
             <div className="p-12 text-center">
               <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6"><Upload className="h-8 w-8" /></div>
-              <h2 className="text-2xl font-black text-slate-900 mb-2">Build Chronological Database</h2>
-              <p className="text-slate-500 text-sm mb-10 max-w-sm mx-auto">Upload multiple monthly reports. The system automatically detects and skips duplicate records based on Airport, Month, and Year.</p>
+              <h2 className="text-2xl font-black text-slate-900 mb-2">Build Intelligence Library</h2>
+              <p className="text-slate-500 text-sm mb-10 max-w-sm mx-auto">Upload AAI reports. They will be stored locally on your device for instant access in future sessions.</p>
               
               <div className="relative group max-w-lg mx-auto mb-8 cursor-pointer">
                 <input type="file" multiple onChange={handleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
                 <div className="border-2 border-dashed border-slate-300 rounded-3xl p-14 transition-all group-hover:border-indigo-400 group-hover:bg-indigo-50/10">
                   <FileSpreadsheet className="h-10 text-slate-300 mx-auto mb-4" />
-                  <p className="text-sm font-bold text-slate-600">Select Multiple PDF/Excel Reports</p>
+                  <p className="text-sm font-bold text-slate-600">Drop Monthly PDF/Excel Reports</p>
                 </div>
               </div>
 
               {files.length > 0 && (
                 <div className="mb-8 max-w-lg mx-auto text-left bg-slate-50 p-6 rounded-2xl border border-slate-200 shadow-inner">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center"><History className="h-4 w-4 mr-2 text-indigo-500" /> Pending Processing ({files.length})</p>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center"><History className="h-4 w-4 mr-2 text-indigo-500" /> Pending Queue ({files.length})</p>
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                     {files.map((f, i) => (
                       <div key={i} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100">
                         <span className="text-xs font-bold text-slate-600 truncate">{f.name}</span>
-                        <X className="h-3.5 w-3.5 text-slate-300 hover:text-rose-500 cursor-pointer" />
+                        <X className="h-3.5 w-3.5 text-slate-300 hover:text-rose-500 cursor-pointer" onClick={(e) => {e.stopPropagation(); setFiles(files.filter((_, idx) => idx !== i))}} />
                       </div>
                     ))}
                   </div>
@@ -214,57 +270,66 @@ const App: React.FC = () => {
               )}
 
               <button onClick={processFiles} disabled={isProcessing || !files.length} className="w-full max-w-lg py-4 rounded-2xl font-black text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 transition-all shadow-xl shadow-indigo-100 flex items-center justify-center">
-                {isProcessing ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> {processingStatus}</> : "Process All Files"}
+                {isProcessing ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> {processingStatus}</> : "Process and Store Locally"}
               </button>
             </div>
           </div>
         )}
 
-        {/* Notifications */}
+        {/* Status Indicators */}
         <div className="max-w-2xl mx-auto space-y-4">
-            {error && (
+          {error && (
             <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-center text-amber-800 text-sm animate-in fade-in zoom-in-95 duration-300">
-                <AlertCircle className="h-5 w-5 mr-3 flex-shrink-0" />
-                <span className="font-medium">{error}</span>
-                <button onClick={() => setError(null)} className="ml-auto text-amber-400 hover:text-amber-600"><X className="h-4 w-4" /></button>
+              <AlertCircle className="h-5 w-5 mr-3 flex-shrink-0" />
+              <span className="font-medium">{error}</span>
+              <button onClick={() => setError(null)} className="ml-auto text-amber-400 hover:text-amber-600"><X className="h-4 w-4" /></button>
             </div>
-            )}
-            {successMsg && (
+          )}
+          {successMsg && (
             <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl flex items-center text-emerald-800 text-sm animate-in fade-in zoom-in-95 duration-300">
-                <CheckCircle2 className="h-5 w-5 mr-3 flex-shrink-0" />
-                <span className="font-medium">{successMsg}</span>
-                <button onClick={() => setSuccessMsg(null)} className="ml-auto text-emerald-400 hover:text-emerald-600"><X className="h-4 w-4" /></button>
+              <CheckCircle2 className="h-5 w-5 mr-3 flex-shrink-0" />
+              <span className="font-medium">{successMsg}</span>
+              <button onClick={() => setSuccessMsg(null)} className="ml-auto text-emerald-400 hover:text-emerald-600"><X className="h-4 w-4" /></button>
             </div>
-            )}
+          )}
         </div>
 
         {allRecords.length > 0 && (
           <div className="space-y-6 animate-in fade-in duration-1000">
-            {/* Toolbar: Navigation Tabs & Actions */}
+            {/* Nav Toolbar */}
             <div className="flex flex-col lg:flex-row justify-between items-center bg-white p-4 rounded-3xl border border-slate-200 shadow-sm gap-4">
               <div className="flex items-center space-x-6">
                 <div className="bg-slate-50 p-1.5 rounded-2xl flex space-x-1">
-                  <button onClick={() => setActiveTab('table')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center ${activeTab === 'table' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
-                    <TableIcon className="h-4 w-4 mr-2" /> Data Explorer
+                  <button onClick={() => setActiveTab('table')} className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center ${activeTab === 'table' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                    <TableIcon className="h-3.5 w-3.5 mr-2" /> Records Grid
                   </button>
-                  <button onClick={() => setActiveTab('charts')} className={`px-8 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center ${activeTab === 'charts' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
-                    <BarChart3 className="h-4 w-4 mr-2" /> Analytics Hub
+                  <button onClick={() => setActiveTab('charts')} className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center ${activeTab === 'charts' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                    <BarChart3 className="h-3.5 w-3.5 mr-2" /> Performance
+                  </button>
+                  <button onClick={() => setActiveTab('library')} className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center ${activeTab === 'library' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                    <Library className="h-3.5 w-3.5 mr-2" /> File Library
                   </button>
                 </div>
                 <div className="h-8 w-px bg-slate-200" />
-                <div className="flex items-center space-x-2">
-                  <Activity className="h-5 w-5 text-indigo-500" />
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{allRecords.length} Consolidated Records</span>
+                <div className="flex items-center space-x-4">
+                  <div className="flex items-center space-x-2">
+                    <Database className="h-4 w-4 text-indigo-500" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{allRecords.length} Data Points</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <FileCheck className="h-4 w-4 text-emerald-500" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{processedFiles.length} Reports</span>
+                  </div>
                 </div>
               </div>
-              <button onClick={clearAll} className="px-4 py-2 bg-white border border-slate-200 rounded-xl hover:bg-rose-50 hover:text-rose-600 transition-all text-xs font-bold flex items-center">
-                <RefreshCw className="h-3.5 w-3.5 mr-2" /> Clear Master Data
+              <button onClick={clearAllData} className="px-4 py-2 bg-white border border-slate-200 rounded-xl hover:bg-rose-50 hover:text-rose-600 transition-all text-[10px] font-black uppercase tracking-widest flex items-center">
+                <Trash2 className="h-3 w-3 mr-2" /> Wipe Local Cache
               </button>
             </div>
 
-            {activeTab === 'table' ? (
+            {activeTab === 'table' && (
               <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden overflow-x-auto custom-scrollbar">
-                <table className="w-full text-left border-collapse min-w-[3000px]">
+                <table className="w-full text-left border-collapse min-w-[3200px]">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10 backdrop-blur-md">
                       <th onClick={() => requestSort('year')} className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest cursor-pointer bg-slate-50 hover:bg-slate-100 border-r border-slate-200">Year {getSortIcon('year')}</th>
@@ -288,7 +353,8 @@ const App: React.FC = () => {
                       <th onClick={() => requestSort('domPaxAtm')} className="px-6 py-5 text-[10px] font-black text-blue-500 uppercase tracking-widest text-center cursor-pointer border-r border-slate-200">DOM Pax ATM</th>
                       <th onClick={() => requestSort('domCargoAtm')} className="px-6 py-5 text-[10px] font-black text-emerald-500 uppercase tracking-widest text-center cursor-pointer border-r border-slate-200">DOM Cargo ATM</th>
                       <th onClick={() => requestSort('intlPaxAtm')} className="px-6 py-5 text-[10px] font-black text-blue-600 uppercase tracking-widest text-center cursor-pointer border-r border-slate-200">INTL Pax ATM</th>
-                      <th onClick={() => requestSort('intlCargoAtm')} className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase tracking-widest text-center cursor-pointer">INTL Cargo ATM</th>
+                      <th onClick={() => requestSort('intlCargoAtm')} className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase tracking-widest text-center cursor-pointer border-r border-slate-200">INTL Cargo ATM</th>
+                      <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">Source File</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -327,19 +393,22 @@ const App: React.FC = () => {
                         <td className="px-6 py-4 text-[11px] font-bold text-blue-500 text-center border-r border-slate-100">{r.atms.domestic.pax.toLocaleString()}</td>
                         <td className="px-6 py-4 text-[11px] font-bold text-emerald-500 text-center border-r border-slate-100">{r.atms.domestic.cargo.toLocaleString()}</td>
                         <td className="px-6 py-4 text-[11px] font-bold text-blue-600 text-center border-r border-slate-100">{r.atms.international.pax.toLocaleString()}</td>
-                        <td className="px-6 py-4 text-[11px] font-bold text-emerald-600 text-center">{r.atms.international.cargo.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-[11px] font-bold text-emerald-600 text-center border-r border-slate-100">{r.atms.international.cargo.toLocaleString()}</td>
+                        <td className="px-6 py-4 text-[9px] font-bold text-slate-400 truncate max-w-[150px]">{r.sourceFile || "Manual"}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            ) : (
+            )}
+
+            {activeTab === 'charts' && (
               <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col justify-between transition-all hover:shadow-md">
                     <div className="flex items-center space-x-3 mb-4">
                       <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl"><Users className="h-5 w-5" /></div>
-                      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Pax (Consolidated)</h3>
+                      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Pax (Master Pool)</h3>
                     </div>
                     <p className="text-4xl font-black text-slate-900">{allRecords.reduce((a, b) => a + b.passengers.total, 0).toLocaleString()}</p>
                   </div>
@@ -361,7 +430,7 @@ const App: React.FC = () => {
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-                    <h3 className="text-lg font-black text-slate-900 mb-8">Passenger contribution split by Month</h3>
+                    <h3 className="text-lg font-black text-slate-900 mb-8">Monthly Traffic Trend</h3>
                     <div className="h-[450px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={performanceTrends}>
@@ -387,7 +456,7 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-                    <h3 className="text-lg font-black text-slate-900 mb-8">ATM Movement distribution by Month</h3>
+                    <h3 className="text-lg font-black text-slate-900 mb-8">ATM Movement Breakdown</h3>
                     <div className="h-[450px]">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={performanceTrends}>
@@ -406,17 +475,68 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {activeTab === 'library' && (
+              <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-black text-slate-900 tracking-tight">Reports Library</h3>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Manage Processed Files</p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {processedFiles.length === 0 ? (
+                    <div className="col-span-full py-20 bg-white border border-slate-200 border-dashed rounded-[2rem] flex flex-col items-center justify-center text-slate-400">
+                      <History className="h-12 w-12 mb-4 opacity-20" />
+                      <p className="font-bold">Library is empty.</p>
+                      <p className="text-xs uppercase tracking-widest font-black mt-2">Processed reports will appear here</p>
+                    </div>
+                  ) : (
+                    processedFiles.map((file) => (
+                      <div key={file.id} className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-md transition-all group flex flex-col justify-between">
+                        <div>
+                          <div className="flex justify-between items-start mb-4">
+                            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                              <FileText className="h-6 w-6" />
+                            </div>
+                            <button 
+                              onClick={() => deleteFileFromLibrary(file.name)}
+                              className="p-2 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                              title="Delete this file and its data"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                          <h4 className="font-black text-slate-900 truncate mb-1" title={file.name}>{file.name}</h4>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-6">Processed on {new Date(file.processedAt).toLocaleDateString()}</p>
+                        </div>
+                        
+                        <div className="pt-4 border-t border-slate-50 flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <Database className="h-3.5 w-3.5 text-indigo-500" />
+                            <span className="text-xs font-black text-slate-600">{file.recordCount} Records</span>
+                          </div>
+                          <div className="flex items-center space-x-1">
+                            <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                            <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Active</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>
 
       <footer className="bg-white border-t border-slate-200 py-10 mt-auto">
         <div className="max-w-[2000px] mx-auto px-6 flex flex-col md:flex-row justify-between items-center text-slate-400 text-[10px] font-black uppercase tracking-[0.3em]">
-          <p>© 2024 Aviation Intelligence Hub • v2.9.0 • Duplicate-Safe Engine</p>
+          <p>© 2024 Aviation Intelligence Hub • v3.1.0 • Persistence Engine</p>
           <div className="flex space-x-12 mt-6 md:mt-0">
-            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Security Protocol</span>
-            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Master Analytics</span>
-            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Export Logs</span>
+            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Local Storage Logic</span>
+            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Master Pool</span>
+            <span className="hover:text-indigo-500 transition-colors cursor-pointer">Privacy First</span>
           </div>
         </div>
       </footer>

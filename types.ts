@@ -3,6 +3,7 @@ export interface AirportRecord {
   airportName: string;
   category: string;
   timePeriod: string; // e.g., "September 2024"
+  sourceFile: string; // Track which file this came from
   passengers: {
     domestic: number;
     international: number;
@@ -46,6 +47,13 @@ export interface AirportRecord {
   month: string;
   year: number;
   reportType: 'Monthly' | 'Yearly';
+}
+
+export interface ProcessedFileMeta {
+  id: string;
+  name: string;
+  processedAt: string;
+  recordCount: number;
 }
 
 export interface ExtractionResponse {
