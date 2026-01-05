@@ -1,0 +1,5 @@
+{
+  "name": "AAI Aviation Data Extractor",
+  "description": "An intelligent tool to extract airport traffic statistics (Passengers, Cargo, ATMs) from AAI/APAO reports in PDF, CSV, and Excel formats, with one-click export to Excel.",
+  "requestFramePermissions": []
+}
