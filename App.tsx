@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Upload, Download, AlertCircle, Plus, Layers, Loader2, Table as TableIcon, History, Trash2, Library, FileSearch, CheckCircle2, Info, X } from 'lucide-react';
+import { Upload, Download, AlertCircle, Plus, Layers, Loader2, Table as TableIcon, History, Trash2, Library, FileSearch, CheckCircle2, Info } from 'lucide-react';
 import { extractAirportData, extractAAIData } from './services/geminiService';
 import { exportToExcel, readSheetData } from './services/excelService';
 import { extractTextFromPdf } from './services/pdfService';
@@ -13,7 +13,7 @@ const STORAGE_KEY_FILES = 'aai_processed_files_meta_v6';
 interface ProcessingSummary {
   totalRows: number;
   successful: number;
-  skipped: number;
+  skipped: number; // Repurposed for skipped duplicate files
 }
 
 const App: React.FC = () => {
@@ -45,23 +45,6 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEY_RECORDS_AAI, JSON.stringify(aaiRecords));
     localStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(processedFiles));
   }, [apaoRecords, aaiRecords, processedFiles]);
-
-  const handleFileSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []);
-    // FIX: Explicitly typing the 'prev' state parameter to File[] to resolve 'unknown' type inference on line 54
-    setFiles((prev: File[]) => {
-      // Append unique files based on name and size
-      const existingNames = new Set(prev.map(f => `${f.name}-${f.size}`));
-      const newFiles = selectedFiles.filter(f => !existingNames.has(`${f.name}-${f.size}`));
-      return [...prev, ...newFiles];
-    });
-    // Reset input so the same file can be picked again if removed
-    e.target.value = '';
-  };
-
-  const removeFileFromQueue = (index: number) => {
-    setFiles(prev => prev.filter((_, i) => i !== index));
-  };
 
   const parseAAIFilename = (name: string) => {
     const lower = name.toLowerCase();
@@ -103,7 +86,9 @@ const App: React.FC = () => {
       const sortedFilesList = [...files].sort((a, b) => a.name.localeCompare(b.name));
       
       for (const file of sortedFilesList) {
+        // DUPLICATE CHECK: Skip if file name already exists in processedFiles
         if (processedFiles.some(pf => pf.name === file.name)) {
+          console.log(`Skipping duplicate file: ${file.name}`);
           skippedCount++;
           continue;
         }
@@ -208,8 +193,8 @@ const App: React.FC = () => {
         </div>
         <div className="flex space-x-3">
           <button onClick={() => document.getElementById('fl')?.click()} className="bg-slate-100 text-slate-700 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all flex items-center">
-            <Plus className="mr-2 h-4 w-4" /> Add Files
-            <input id="fl" type="file" multiple hidden onChange={handleFileSelection} />
+            <Plus className="mr-2 h-4 w-4" /> Import Reports
+            <input id="fl" type="file" multiple hidden onChange={(e) => setFiles(Array.from(e.target.files || []))} />
           </button>
           <button onClick={() => exportToExcel(mainTab === 'AAI' ? aaiRecords : apaoRecords, 'Aviation_Master', mainTab)} className="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-emerald-100 flex items-center">
             <Download className="mr-2 h-4 w-4" /> Export Master
@@ -221,36 +206,25 @@ const App: React.FC = () => {
         {files.length > 0 && (
           <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl max-w-2xl mx-auto text-center animate-in slide-in-from-top-10 duration-500">
             <Upload className="h-12 w-12 text-indigo-500 mx-auto mb-6" />
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-2xl font-black">Ready to Process</h2>
-              <button onClick={() => setFiles([])} className="text-xs font-black text-rose-500 uppercase tracking-widest hover:underline">Clear Queue</button>
-            </div>
-            <div className="space-y-2 mb-8 max-h-60 overflow-auto py-2 custom-scrollbar">
-              {files.map((f, idx) => {
+            <h2 className="text-2xl font-black mb-2">Process Documents</h2>
+            <div className="space-y-2 mb-8 max-h-40 overflow-auto py-2">
+              {files.map(f => {
                 const isDuplicate = processedFiles.some(pf => pf.name === f.name);
                 return (
-                  <div key={`${f.name}-${idx}`} className={`group p-3 rounded-xl flex justify-between items-center text-xs font-bold border ${isDuplicate ? 'bg-rose-50 border-rose-100 text-rose-600 opacity-60' : 'bg-slate-50 border-slate-100 text-slate-700'}`}>
+                  <div key={f.name} className={`p-3 rounded-xl flex justify-between items-center text-xs font-bold border ${isDuplicate ? 'bg-rose-50 border-rose-100 text-rose-600 opacity-60' : 'bg-slate-50 border-slate-100 text-slate-700'}`}>
                     <span className="truncate flex items-center">
                       <span className={`w-2 h-2 rounded-full mr-2 ${f.name.toUpperCase().startsWith('APAO') ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
                       {f.name}
                     </span>
-                    <div className="flex items-center space-x-3">
-                      <span className="text-slate-400 font-mono text-[10px] uppercase">
-                        {isDuplicate ? 'ALREADY IN ARCHIVE' : (f.name.toUpperCase().startsWith('APAO') ? 'APAO' : 'AAI')}
-                      </span>
-                      <button 
-                        onClick={() => removeFileFromQueue(idx)}
-                        className="text-slate-300 hover:text-rose-500 transition-colors p-1"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
+                    <span className="text-slate-400 ml-4 font-mono text-[10px] uppercase">
+                      {isDuplicate ? 'DUPLICATE' : (f.name.toUpperCase().startsWith('APAO') ? 'APAO' : 'AAI')}
+                    </span>
                   </div>
                 );
               })}
             </div>
-            <button onClick={processFiles} disabled={isProcessing} className="w-full bg-indigo-600 py-4 text-white rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center hover:scale-[1.02] transition-all disabled:bg-slate-200 disabled:shadow-none">
-              {isProcessing ? <><Loader2 className="animate-spin mr-2" /> {processingStatus}</> : `Extract Data from ${files.length} Files`}
+            <button onClick={processFiles} disabled={isProcessing} className="w-full bg-indigo-600 py-4 text-white rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center hover:scale-[1.02] transition-all">
+              {isProcessing ? <><Loader2 className="animate-spin mr-2" /> {processingStatus}</> : "Analyze Documents"}
             </button>
           </div>
         )}
@@ -266,7 +240,7 @@ const App: React.FC = () => {
               <p className="text-3xl font-black text-emerald-700">Success</p>
             </div>
             <div className="bg-slate-50 p-6 rounded-3xl border text-center">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Duplicates Skipped</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Duplicate Files Skipped</p>
               <p className="text-3xl font-black text-slate-400">{summary.skipped}</p>
             </div>
           </div>
@@ -314,7 +288,7 @@ const App: React.FC = () => {
                     </thead>
                     <tbody className="divide-y text-[11px] font-bold">
                       {sortedAAI.length === 0 ? (
-                        <tr><td colSpan={12} className="py-20 text-center text-slate-400 font-medium">No AAI records available. Add Annex documents to extract data.</td></tr>
+                        <tr><td colSpan={12} className="py-20 text-center text-slate-400 font-medium">No AAI records available. Upload Annex documents.</td></tr>
                       ) : sortedAAI.map(r => (
                         <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                           <td className="py-4 pl-4 text-slate-400">{r.year}</td>
@@ -359,7 +333,7 @@ const App: React.FC = () => {
                     </thead>
                     <tbody className="divide-y text-[11px] font-bold">
                       {sortedAPAO.length === 0 ? (
-                        <tr><td colSpan={18} className="py-20 text-center text-slate-400 font-medium">No APAO records detected. Add "APAO..." reports to extract data.</td></tr>
+                        <tr><td colSpan={18} className="py-20 text-center text-slate-400 font-medium">No APAO records detected. Upload "APAO..." reports.</td></tr>
                       ) : sortedAPAO.map((r, i) => (
                         <tr key={i} className="hover:bg-slate-50 transition-colors">
                           <td className="py-4 pl-4 text-slate-400">{r.year}</td>
@@ -428,7 +402,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="mt-auto p-10 text-center text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] border-t bg-white">
-        Aviation Intelligence Hub • Enterprise Extraction Engine v4.7
+        Aviation Intelligence Hub • Enterprise Extraction Engine v4.6
       </footer>
 
       <style>{`
