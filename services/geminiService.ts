@@ -1,8 +1,8 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { AirportRecord } from "../types";
+import { AirportRecord, AAIRecord } from "../types";
 
-const EXTRACTION_SCHEMA = {
+const APAO_SCHEMA = {
   type: Type.OBJECT,
   properties: {
     data: {
@@ -10,9 +10,9 @@ const EXTRACTION_SCHEMA = {
       items: {
         type: Type.OBJECT,
         properties: {
-          airportName: { type: Type.STRING, description: "Name of the airport" },
-          category: { type: Type.STRING, description: "Airport category" },
-          timePeriod: { type: Type.STRING, description: "The month and year of the report, e.g., 'Oct 2023'" },
+          airportName: { type: Type.STRING },
+          category: { type: Type.STRING },
+          timePeriod: { type: Type.STRING },
           passengers: {
             type: Type.OBJECT,
             properties: {
@@ -22,74 +22,79 @@ const EXTRACTION_SCHEMA = {
               previousYear: { type: Type.NUMBER },
               previousMonth: { type: Type.NUMBER },
               growthPercentage: { type: Type.NUMBER }
-            },
-            required: ["domestic", "international", "total"]
+            }
           },
           cargo: {
             type: Type.OBJECT,
             properties: {
               international: {
                 type: Type.OBJECT,
-                properties: {
-                  inbound: { type: Type.NUMBER },
-                  outbound: { type: Type.NUMBER },
-                  total: { type: Type.NUMBER }
-                },
-                required: ["inbound", "outbound", "total"]
+                properties: { inbound: { type: Type.NUMBER }, outbound: { type: Type.NUMBER }, total: { type: Type.NUMBER } }
               },
               domestic: {
                 type: Type.OBJECT,
-                properties: {
-                  inbound: { type: Type.NUMBER },
-                  outbound: { type: Type.NUMBER },
-                  total: { type: Type.NUMBER }
-                },
-                required: ["inbound", "outbound", "total"]
+                properties: { inbound: { type: Type.NUMBER }, outbound: { type: Type.NUMBER }, total: { type: Type.NUMBER } }
               },
               total: { type: Type.NUMBER },
               previousYear: { type: Type.NUMBER },
-              previousMonth: { type: Type.NUMBER },
               growthPercentage: { type: Type.NUMBER }
-            },
-            required: ["international", "domestic", "total"]
+            }
           },
           atms: {
             type: Type.OBJECT,
             properties: {
               domestic: {
                 type: Type.OBJECT,
-                properties: {
-                  pax: { type: Type.NUMBER, description: "Domestic Passenger ATM" },
-                  cargo: { type: Type.NUMBER, description: "Domestic Cargo ATM" },
-                  total: { type: Type.NUMBER }
-                },
-                required: ["pax", "cargo", "total"]
+                properties: { 
+                  pax: { type: Type.NUMBER, description: "Domestic Pax ATM" }, 
+                  cargo: { type: Type.NUMBER, description: "Domestic Cargo ATM" }, 
+                  total: { type: Type.NUMBER, description: "Total Domestic ATM" } 
+                }
               },
               international: {
                 type: Type.OBJECT,
-                properties: {
-                  pax: { type: Type.NUMBER, description: "International Passenger ATM" },
-                  cargo: { type: Type.NUMBER, description: "International Cargo ATM" },
-                  total: { type: Type.NUMBER }
-                },
-                required: ["pax", "cargo", "total"]
+                properties: { 
+                  pax: { type: Type.NUMBER, description: "International Pax ATM" }, 
+                  cargo: { type: Type.NUMBER, description: "International Cargo ATM" }, 
+                  total: { type: Type.NUMBER, description: "Total International ATM" } 
+                }
               },
               total: { type: Type.NUMBER },
               previousYear: { type: Type.NUMBER },
-              previousMonth: { type: Type.NUMBER },
               growthPercentage: { type: Type.NUMBER }
-            },
-            required: ["domestic", "international", "total"]
+            }
           },
           month: { type: Type.STRING },
           year: { type: Type.NUMBER },
-          reportType: { type: Type.STRING, enum: ["Monthly", "Yearly"] }
-        },
-        required: ["airportName", "passengers", "cargo", "atms", "timePeriod"]
+          reportType: { type: Type.STRING }
+        }
       }
     }
-  },
-  required: ["data"]
+  }
+};
+
+const AAI_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    records: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          airportName: { type: Type.STRING },
+          airportType: { type: Type.STRING, description: "Must be one of: International Airports, JV International Airports, Custom Airports, or Domestic Airports" },
+          category: { type: Type.STRING, enum: ["Domestic", "International", "Total"] },
+          monthValue: { type: Type.NUMBER },
+          prevMonthValue: { type: Type.NUMBER },
+          monthChange: { type: Type.NUMBER },
+          ytdValue: { type: Type.NUMBER },
+          prevYtdValue: { type: Type.NUMBER },
+          ytdChange: { type: Type.NUMBER }
+        },
+        required: ["airportName", "airportType", "category", "monthValue", "prevMonthValue", "monthChange", "ytdValue", "prevYtdValue", "ytdChange"]
+      }
+    }
+  }
 };
 
 async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
@@ -109,28 +114,41 @@ export const extractAirportData = async (text: string): Promise<AirportRecord[]>
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `You are an expert aviation data extractor. 
-      Your task is to extract EVERY SINGLE ROW of traffic statistics from the provided AAI report. 
-      Do not skip any airports. Ensure all columns (Domestic, International, Total, YoY Growth) are captured for Passengers, Cargo, and Aircraft Movements (ATMs).
+      contents: `Extract APAO aviation traffic data from this text. Capture all airports and detailed columns including Passenger, Cargo, and ATM (split by Pax/Cargo for both Domestic and International). Text: ${text}`,
+      config: { responseMimeType: "application/json", responseSchema: APAO_SCHEMA },
+    });
+    const result = JSON.parse(response.text || "{}");
+    return result.data || [];
+  });
+};
+
+export const extractAAIData = async (text: string, dataType: string): Promise<any[]> => {
+  return withRetry(async () => {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-preview",
+      contents: `Extract AAI ${dataType} statistics for ALL airports.
       
-      Look specifically for:
-      - Passenger Traffic (DOM, INTL, TOTAL)
-      - Cargo Traffic in MT (DOM, INTL, TOTAL)
-      - Aircraft Movements (ATMs) with PAX/Cargo splits.
+      CRITICAL INSTRUCTIONS:
+      1. EXHAUSTIVE EXTRACTION: Do not skip any airports. Extract every row from the tables.
+      2. AIRPORT TYPE CLASSIFICATION: Monitor the section headers in the text. 
+         Identify if the airport belongs to:
+         - "International Airports"
+         - "JV International Airports"
+         - "Custom Airports"
+         - "Domestic Airports"
+      3. CATEGORY DETECTION: Each airport row might have 'Domestic', 'International', and 'Total' sub-rows. Extract all of them correctly.
+      4. VALUES: Extract Current Month Value, Previous Year Month Value, % Change, Current YTD, Previous YTD, YTD % Change.
       
-      If the text contains multiple tables, merge them into a single continuous list of records.
-      
-      Text to parse:
+      Input text:
       ${text}`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: EXTRACTION_SCHEMA,
+      config: { 
+        responseMimeType: "application/json", 
+        responseSchema: AAI_SCHEMA,
+        thinkingConfig: { thinkingBudget: 4000 }
       },
     });
-
-    const textOutput = response.text;
-    if (!textOutput) return [];
-    const result = JSON.parse(textOutput);
-    return result.data || [];
+    const result = JSON.parse(response.text || "{}");
+    return result.records || [];
   });
 };
