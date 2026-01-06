@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Upload, Download, AlertCircle, Plus, Layers, Loader2, Table as TableIcon, History, Trash2, Library, FileSearch, CheckCircle2, Info } from 'lucide-react';
+import { Upload, Download, AlertCircle, Plus, Layers, Loader2, Table as TableIcon, History, Trash2, Library, FileSearch, CheckCircle2, Info, X } from 'lucide-react';
 import { extractAirportData, extractAAIData } from './services/geminiService';
 import { exportToExcel, readSheetData } from './services/excelService';
 import { extractTextFromPdf } from './services/pdfService';
@@ -46,6 +46,23 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(processedFiles));
   }, [apaoRecords, aaiRecords, processedFiles]);
 
+  const handleFileSelection = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files || []);
+    // FIX: Explicitly typing the 'prev' state parameter to File[] to resolve 'unknown' type inference on line 54
+    setFiles((prev: File[]) => {
+      // Append unique files based on name and size
+      const existingNames = new Set(prev.map(f => `${f.name}-${f.size}`));
+      const newFiles = selectedFiles.filter(f => !existingNames.has(`${f.name}-${f.size}`));
+      return [...prev, ...newFiles];
+    });
+    // Reset input so the same file can be picked again if removed
+    e.target.value = '';
+  };
+
+  const removeFileFromQueue = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
   const parseAAIFilename = (name: string) => {
     const lower = name.toLowerCase();
     let dataType: 'Passengers' | 'Cargo' | 'ATMs' = 'Passengers';
@@ -65,16 +82,10 @@ const App: React.FC = () => {
   };
 
   const preProcessAAIText = (text: string) => {
-    // Clean Hindi and non-ASCII characters
     const cleaned = text.replace(/[\u0900-\u097F]/g, '').replace(/[^\x00-\x7F]/g, '').trim();
     const lines = cleaned.split('\n');
-    
-    // Instead of skipping purely to Amritsar, skip to the first mention of "AIRPORTS" 
-    // to preserve section headers like "INTERNATIONAL AIRPORTS".
     const startIndex = lines.findIndex(l => l.toUpperCase().includes('AIRPORTS') && (l.toUpperCase().includes('INTERNATIONAL') || l.toUpperCase().includes('DOMESTIC')));
     if (startIndex === -1) return cleaned;
-    
-    // Take a few lines before just in case the header is slightly above
     const safeStart = Math.max(0, startIndex - 2);
     return lines.slice(safeStart).join('\n');
   };
@@ -86,11 +97,17 @@ const App: React.FC = () => {
     setSummary(null);
     let totalRowsProcessed = 0;
     let successfulInserts = 0;
+    let skippedCount = 0;
 
     try {
       const sortedFilesList = [...files].sort((a, b) => a.name.localeCompare(b.name));
       
       for (const file of sortedFilesList) {
+        if (processedFiles.some(pf => pf.name === file.name)) {
+          skippedCount++;
+          continue;
+        }
+
         setProcessingStatus(`Analyzing ${file.name}...`);
         const ext = file.name.split('.').pop()?.toLowerCase();
         let rawText = "";
@@ -130,9 +147,12 @@ const App: React.FC = () => {
       setSummary({
         totalRows: totalRowsProcessed,
         successful: successfulInserts,
-        skipped: 0
+        skipped: skippedCount
       });
       setFiles([]);
+      if (skippedCount > 0) {
+        setError(`Note: ${skippedCount} file(s) were skipped because they have already been processed.`);
+      }
     } catch (err: any) {
       setError(err.message || "Extraction process failed");
     } finally {
@@ -188,8 +208,8 @@ const App: React.FC = () => {
         </div>
         <div className="flex space-x-3">
           <button onClick={() => document.getElementById('fl')?.click()} className="bg-slate-100 text-slate-700 px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all flex items-center">
-            <Plus className="mr-2 h-4 w-4" /> Import Reports
-            <input id="fl" type="file" multiple hidden onChange={(e) => setFiles(Array.from(e.target.files || []))} />
+            <Plus className="mr-2 h-4 w-4" /> Add Files
+            <input id="fl" type="file" multiple hidden onChange={handleFileSelection} />
           </button>
           <button onClick={() => exportToExcel(mainTab === 'AAI' ? aaiRecords : apaoRecords, 'Aviation_Master', mainTab)} className="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-emerald-100 flex items-center">
             <Download className="mr-2 h-4 w-4" /> Export Master
@@ -201,20 +221,36 @@ const App: React.FC = () => {
         {files.length > 0 && (
           <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl max-w-2xl mx-auto text-center animate-in slide-in-from-top-10 duration-500">
             <Upload className="h-12 w-12 text-indigo-500 mx-auto mb-6" />
-            <h2 className="text-2xl font-black mb-2">Process Documents</h2>
-            <div className="space-y-2 mb-8 max-h-40 overflow-auto py-2">
-              {files.map(f => (
-                <div key={f.name} className="bg-slate-50 p-3 rounded-xl flex justify-between items-center text-xs font-bold border">
-                  <span className="truncate flex items-center">
-                    <span className={`w-2 h-2 rounded-full mr-2 ${f.name.toUpperCase().startsWith('APAO') ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
-                    {f.name}
-                  </span>
-                  <span className="text-slate-400 ml-4 font-mono text-[10px] uppercase">{f.name.toUpperCase().startsWith('APAO') ? 'APAO DETECTED' : 'AAI DETECTED'}</span>
-                </div>
-              ))}
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-2xl font-black">Ready to Process</h2>
+              <button onClick={() => setFiles([])} className="text-xs font-black text-rose-500 uppercase tracking-widest hover:underline">Clear Queue</button>
             </div>
-            <button onClick={processFiles} disabled={isProcessing} className="w-full bg-indigo-600 py-4 text-white rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center hover:scale-[1.02] transition-all">
-              {isProcessing ? <><Loader2 className="animate-spin mr-2" /> {processingStatus}</> : "Analyze Documents"}
+            <div className="space-y-2 mb-8 max-h-60 overflow-auto py-2 custom-scrollbar">
+              {files.map((f, idx) => {
+                const isDuplicate = processedFiles.some(pf => pf.name === f.name);
+                return (
+                  <div key={`${f.name}-${idx}`} className={`group p-3 rounded-xl flex justify-between items-center text-xs font-bold border ${isDuplicate ? 'bg-rose-50 border-rose-100 text-rose-600 opacity-60' : 'bg-slate-50 border-slate-100 text-slate-700'}`}>
+                    <span className="truncate flex items-center">
+                      <span className={`w-2 h-2 rounded-full mr-2 ${f.name.toUpperCase().startsWith('APAO') ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
+                      {f.name}
+                    </span>
+                    <div className="flex items-center space-x-3">
+                      <span className="text-slate-400 font-mono text-[10px] uppercase">
+                        {isDuplicate ? 'ALREADY IN ARCHIVE' : (f.name.toUpperCase().startsWith('APAO') ? 'APAO' : 'AAI')}
+                      </span>
+                      <button 
+                        onClick={() => removeFileFromQueue(idx)}
+                        className="text-slate-300 hover:text-rose-500 transition-colors p-1"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={processFiles} disabled={isProcessing} className="w-full bg-indigo-600 py-4 text-white rounded-2xl font-black shadow-xl shadow-indigo-100 flex items-center justify-center hover:scale-[1.02] transition-all disabled:bg-slate-200 disabled:shadow-none">
+              {isProcessing ? <><Loader2 className="animate-spin mr-2" /> {processingStatus}</> : `Extract Data from ${files.length} Files`}
             </button>
           </div>
         )}
@@ -222,21 +258,23 @@ const App: React.FC = () => {
         {summary && (
           <div className="max-w-4xl mx-auto grid grid-cols-3 gap-4 animate-in fade-in zoom-in">
             <div className="bg-white p-6 rounded-3xl border shadow-sm text-center">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Processed</p>
-              <p className="text-3xl font-black text-slate-900">{summary.totalRows}</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Records Extracted</p>
+              <p className="text-3xl font-black text-slate-900">{summary.successful}</p>
             </div>
             <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 text-center">
-              <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Extracted</p>
-              <p className="text-3xl font-black text-emerald-700">{summary.successful}</p>
+              <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Status</p>
+              <p className="text-3xl font-black text-emerald-700">Success</p>
             </div>
             <div className="bg-slate-50 p-6 rounded-3xl border text-center">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Failed/Filtered</p>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Duplicates Skipped</p>
               <p className="text-3xl font-black text-slate-400">{summary.skipped}</p>
             </div>
           </div>
         )}
 
-        {error && <div className="max-w-xl mx-auto bg-rose-50 border border-rose-200 p-4 rounded-2xl flex items-center text-rose-800 text-sm font-bold"><AlertCircle className="mr-3" /> {error}</div>}
+        {error && <div className={`max-w-xl mx-auto border p-4 rounded-2xl flex items-center text-sm font-bold ${error.includes('skipped') ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-rose-50 border-rose-200 text-rose-800'}`}>
+          <AlertCircle className="mr-3" /> {error}
+        </div>}
 
         <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden min-h-[600px] flex flex-col">
           <div className="flex bg-slate-50/50 p-3 border-b items-center">
@@ -276,7 +314,7 @@ const App: React.FC = () => {
                     </thead>
                     <tbody className="divide-y text-[11px] font-bold">
                       {sortedAAI.length === 0 ? (
-                        <tr><td colSpan={12} className="py-20 text-center text-slate-400 font-medium">No AAI records available. Upload Annex documents.</td></tr>
+                        <tr><td colSpan={12} className="py-20 text-center text-slate-400 font-medium">No AAI records available. Add Annex documents to extract data.</td></tr>
                       ) : sortedAAI.map(r => (
                         <tr key={r.id} className="hover:bg-slate-50 transition-colors">
                           <td className="py-4 pl-4 text-slate-400">{r.year}</td>
@@ -321,7 +359,7 @@ const App: React.FC = () => {
                     </thead>
                     <tbody className="divide-y text-[11px] font-bold">
                       {sortedAPAO.length === 0 ? (
-                        <tr><td colSpan={18} className="py-20 text-center text-slate-400 font-medium">No APAO records detected. Upload "APAO..." reports.</td></tr>
+                        <tr><td colSpan={18} className="py-20 text-center text-slate-400 font-medium">No APAO records detected. Add "APAO..." reports to extract data.</td></tr>
                       ) : sortedAPAO.map((r, i) => (
                         <tr key={i} className="hover:bg-slate-50 transition-colors">
                           <td className="py-4 pl-4 text-slate-400">{r.year}</td>
@@ -390,7 +428,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="mt-auto p-10 text-center text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] border-t bg-white">
-        Aviation Intelligence Hub • Enterprise Extraction Engine v4.5
+        Aviation Intelligence Hub • Enterprise Extraction Engine v4.7
       </footer>
 
       <style>{`
